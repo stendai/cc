@@ -5,9 +5,9 @@ import os
 # Dodaj katalogi do PYTHONPATH
 sys.path.append(os.path.dirname(__file__))
 
-# Import modułów
+# Import modułów - zmieniony import z pages na views
 from db import init_database
-from pages import dashboard, stocks, options, dividends, cashflows, taxes
+from views import dashboard, stocks, options, dividends, cashflows, taxes
 
 # Konfiguracja strony
 st.set_page_config(
@@ -48,6 +48,16 @@ st.markdown("""
         padding: 1rem;
         border-radius: 0.5rem;
         margin: 1rem 0;
+    }
+    
+    /* Ukryj domyślną nawigację Streamlit */
+    .css-1d391kg {
+        display: none;
+    }
+    
+    /* Ukryj sidebar pages navigation */
+    section[data-testid="stSidebar"] > div:first-child > div:first-child > div:first-child {
+        display: none;
     }
 </style>
 """, unsafe_allow_html=True)
