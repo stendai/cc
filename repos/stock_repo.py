@@ -71,7 +71,23 @@ class StockRepository:
     def add_transaction(stock_id: int, transaction_type: str, quantity: int, 
                        price: float, commission: float, transaction_date: date, 
                        notes: str = None) -> int:
-        """Dodaje transakcję akcji."""
+        """Dodaje transakcję akcji z obsługą lotów."""
+        
+        # Pobierz kurs NBP z dnia poprzedzającego transakcję
+        from services.nbp import nbp_service
+        from datetime import timedelta
+        
+        try:
+            prev_date = transaction_date - timedelta(days=1)
+            usd_pln_rate = nbp_service.get_usd_pln_rate(prev_date)
+            if not usd_pln_rate:
+                # Jeśli nie ma kursu, spróbuj z dnia transakcji
+                usd_pln_rate = nbp_service.get_usd_pln_rate(transaction_date) or 4.0
+        except Exception as e:
+            print(f"⚠️ Błąd pobierania kursu NBP: {e}")
+            usd_pln_rate = 4.0  # Kurs domyślny
+        
+        # Dodaj transakcję
         query = """
             INSERT INTO stock_transactions 
             (stock_id, transaction_type, quantity, price_usd, commission_usd, transaction_date, notes)
@@ -82,6 +98,52 @@ class StockRepository:
             query, 
             (stock_id, transaction_type, quantity, price, commission, transaction_date, notes)
         )
+        
+        # Obsługa lotów
+        if transaction_type == 'BUY':
+            try:
+                # Utwórz nowy lot
+                from repos.stock_lots_repo import StockLotsRepository
+                lot_id = StockLotsRepository.create_lot_from_purchase(
+                    stock_id, transaction_id, quantity, price, 
+                    commission, transaction_date, usd_pln_rate
+                )
+                
+                # Aktualizuj numer lotu w transakcji
+                execute_update(
+                    "UPDATE stock_transactions SET lot_number = ? WHERE id = ?",
+                    (lot_id, transaction_id)
+                )
+                
+                print(f"📦 Utworzono lot {lot_id} dla {quantity} akcji po ${price:.2f} (kurs {usd_pln_rate:.4f})")
+                
+            except Exception as e:
+                print(f"⚠️ Błąd tworzenia lotu: {e}")
+        
+        elif transaction_type == 'SELL':
+            try:
+                # Przetwórz sprzedaż FIFO
+                from repos.stock_lots_repo import StockLotsRepository
+                sale_details = StockLotsRepository.process_sale_fifo(
+                    stock_id, transaction_id, quantity, price,
+                    transaction_date, usd_pln_rate
+                )
+                
+                # Opcjonalnie zapisz podsumowanie sprzedaży w notatkach
+                if not notes:
+                    lots_sold = [f"Lot {sd['lot_number']}: {sd['quantity_sold']} szt." for sd in sale_details]
+                    notes = f"FIFO: {', '.join(lots_sold)}"
+                    execute_update(
+                        "UPDATE stock_transactions SET notes = ? WHERE id = ?",
+                        (notes, transaction_id)
+                    )
+                    
+            except ValueError as e:
+                # Jeśli nie można wykonać sprzedaży, usuń transakcję
+                execute_update("DELETE FROM stock_transactions WHERE id = ?", (transaction_id,))
+                raise e
+            except Exception as e:
+                print(f"⚠️ Błąd przetwarzania sprzedaży: {e}")
         
         # Aktualizuj ilość i średnią cenę akcji
         StockRepository._update_stock_position(stock_id)
