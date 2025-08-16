@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import platform
+import argparse
 
 def check_python_version():
     """Sprawdza wersję Pythona."""
@@ -48,14 +49,26 @@ def install_requirements():
         print(f"❌ Błąd podczas instalacji zależności: {e}")
         return False
 
-def initialize_database():
+def initialize_database(reset=False):
     """Inicjalizuje bazę danych."""
     print("🗄️ Inicjalizowanie bazy danych...")
     
     try:
         # Import lokalny, żeby sprawdzić czy moduły są dostępne
-        from db import init_database
+        from db import init_database, backup_database, check_database_structure
+        
+        # Utwórz kopię zapasową jeśli istnieje i nie resetujemy
+        if os.path.exists("portfolio.db") and not reset:
+            print("💾 Tworzenie kopii zapasowej istniejącej bazy...")
+            backup_database()
+        
+        # Inicjalizuj bazę
         init_database()
+        
+        # Sprawdź strukturę
+        print("\n📊 Sprawdzanie struktury bazy danych:")
+        check_database_structure()
+        
         print("✅ Baza danych zainicjalizowana")
         return True
     except ImportError as e:
@@ -128,10 +141,49 @@ def run_tests():
         import yfinance
         print("✅ yfinance importowany poprawnie")
         
+        # Test połączenia z bazą danych
+        from db import execute_query
+        result = execute_query("SELECT COUNT(*) as count FROM stocks")
+        print(f"✅ Połączenie z bazą danych: {result[0]['count']} akcji w bazie")
+        
         return True
         
     except ImportError as e:
         print(f"❌ Błąd importu: {e}")
+        return False
+    except Exception as e:
+        print(f"❌ Błąd testów: {e}")
+        return False
+
+def reset_database():
+    """Resetuje bazę danych do stanu początkowego."""
+    print("🔄 Resetowanie bazy danych...")
+    
+    response = input("⚠️ To usunie wszystkie dane! Kontynuować? (tak/nie): ").lower()
+    if response not in ['tak', 'yes', 'y', 't']:
+        print("❌ Anulowano resetowanie bazy danych")
+        return False
+    
+    try:
+        # Utwórz kopię zapasową przed resetem
+        from db import backup_database, init_database
+        
+        if os.path.exists("portfolio.db"):
+            print("💾 Tworzenie kopii zapasowej przed resetem...")
+            backup_database()
+        
+        # Usuń istniejącą bazę
+        if os.path.exists("portfolio.db"):
+            os.remove("portfolio.db")
+            print("🗑️ Usunięto starą bazę danych")
+        
+        # Utwórz nową bazę
+        init_database()
+        print("✅ Baza danych została zresetowana")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Błąd resetowania bazy danych: {e}")
         return False
 
 def display_next_steps():
@@ -151,11 +203,29 @@ def display_next_steps():
     print("• Sprawdź obliczenia podatkowe z doradcą")
     print("\n📚 Dokumentacja: README.md")
     print("🐛 Problemy: Sprawdź logi w katalogu logs/")
+    print("\n🔧 Dodatkowe opcje:")
+    print("• Reset bazy danych: python setup.py --reset-db")
+    print("• Tylko instalacja: python setup.py --install-only")
 
 def main():
     """Główna funkcja setup."""
+    parser = argparse.ArgumentParser(description='Portfolio Tracker Setup')
+    parser.add_argument('--reset-db', action='store_true', help='Resetuj bazę danych')
+    parser.add_argument('--install-only', action='store_true', help='Tylko instaluj zależności')
+    parser.add_argument('--skip-tests', action='store_true', help='Pomiń testy')
+    
+    args = parser.parse_args()
+    
     print("🚀 Portfolio Tracker - Setup")
     print("="*40)
+    
+    # Obsługa specjalnych opcji
+    if args.reset_db:
+        if reset_database():
+            print("✅ Baza danych została zresetowana!")
+        else:
+            print("❌ Błąd resetowania bazy danych")
+        return
     
     # Sprawdzenia wstępne
     if not check_python_version():
@@ -172,13 +242,17 @@ def main():
         print("❌ Setup nie powiódł się - problem z instalacją pakietów")
         sys.exit(1)
     
+    if args.install_only:
+        print("✅ Instalacja zakończona!")
+        return
+    
     # Inicjalizacja bazy
     if not initialize_database():
         print("❌ Setup nie powiódł się - problem z bazą danych")
         sys.exit(1)
     
     # Testy
-    if not run_tests():
+    if not args.skip_tests and not run_tests():
         print("❌ Setup nie powiódł się - problem z testami")
         sys.exit(1)
     

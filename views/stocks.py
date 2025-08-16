@@ -291,34 +291,35 @@ def show_transactions_history_tab():
     try:
         from db import execute_query
         
+        # POPRAWIONE ZAPYTANIE - użyj pełnych nazw kolumn
         query = """
             SELECT 
-                st.id,
-                st.transaction_date,
-                s.symbol,
-                s.name,
-                st.transaction_type,
-                st.quantity,
-                st.price_usd,
-                st.commission_usd,
-                (st.quantity * st.price_usd + st.commission_usd) as total_value,
-                st.notes
-            FROM stock_transactions st
-            JOIN stocks s ON st.stock_id = s.id
+                stock_transactions.id,
+                stock_transactions.transaction_date,
+                stocks.symbol,
+                stocks.name,
+                stock_transactions.transaction_type,
+                stock_transactions.quantity,
+                stock_transactions.price_usd,
+                stock_transactions.commission_usd,
+                (stock_transactions.quantity * stock_transactions.price_usd + stock_transactions.commission_usd) as total_value,
+                stock_transactions.notes
+            FROM stock_transactions
+            JOIN stocks ON stock_transactions.stock_id = stocks.id
             WHERE 1=1
         """
         
         params = []
         
         if symbol_filter != "Wszystkie":
-            query += " AND s.symbol = ?"
+            query += " AND stocks.symbol = ?"
             params.append(symbol_filter)
         
         if type_filter != "Wszystkie":
-            query += " AND st.transaction_type = ?"
+            query += " AND stock_transactions.transaction_type = ?"
             params.append(type_filter)
         
-        query += " ORDER BY st.transaction_date DESC, st.created_at DESC"
+        query += " ORDER BY stock_transactions.transaction_date DESC, stock_transactions.created_at DESC"
         
         if limit != "Wszystkie":
             query += f" LIMIT {limit}"
@@ -382,6 +383,7 @@ def show_transactions_history_tab():
             
     except Exception as e:
         st.error(f"Błąd pobierania transakcji: {e}")
+        st.exception(e)  # Dodaj szczegóły błędu dla debugowania
 
 def show_analysis_tab():
     """Wyświetla analizę portfela akcji."""
