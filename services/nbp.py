@@ -1,3 +1,5 @@
+# services/nbp.py - POPRAWIONA WERSJA
+
 import requests
 from datetime import date, datetime, timedelta
 from typing import Optional, Dict, List
@@ -38,6 +40,7 @@ class NBPService:
         url = f"{self.BASE_URL}/exchangerates/rates/{table}/{currency.lower()}/{date_str}/"
         
         try:
+            print(f"🔄 Pobieranie kursu {currency} z NBP dla daty {date_str}...")
             response = self.session.get(url, timeout=10)
             
             if response.status_code == 200:
@@ -46,19 +49,21 @@ class NBPService:
                 
                 # Zapisz w cache
                 self._cache_rate(f"{currency}/PLN", rate, date_value)
+                print(f"✅ Pobrano kurs {currency}/PLN: {rate:.4f}")
                 
                 return rate
             
             elif response.status_code == 404:
+                print(f"⚠️ Brak kursu {currency} na datę {date_str}, szukam poprzedniego dnia...")
                 # Brak danych na daną datę - spróbuj poprzedni dzień roboczy
                 return self._get_previous_working_day_rate(currency, date_value, table)
             
             else:
-                print(f"Błąd API NBP: {response.status_code}")
+                print(f"❌ Błąd API NBP: {response.status_code}")
                 return None
                 
         except requests.RequestException as e:
-            print(f"Błąd połączenia z NBP: {e}")
+            print(f"❌ Błąd połączenia z NBP: {e}")
             # Spróbuj znaleźć ostatni dostępny kurs
             return self._get_last_available_rate(currency, date_value)
     
@@ -68,7 +73,33 @@ class NBPService:
     
     def get_current_usd_rate(self) -> Optional[float]:
         """Pobiera aktualny kurs USD/PLN."""
-        return self.get_usd_pln_rate(date.today())
+        print("🔄 Pobieranie aktualnego kursu USD/PLN...")
+        
+        # Spróbuj dzisiaj
+        today = date.today()
+        rate = self.get_usd_pln_rate(today)
+        
+        if rate:
+            return rate
+        
+        # Jeśli nie ma dzisiejszego, spróbuj wczoraj
+        yesterday = today - timedelta(days=1)
+        rate = self.get_usd_pln_rate(yesterday)
+        
+        if rate:
+            print(f"✅ Użyto kursu z wczoraj: {rate:.4f}")
+            return rate
+        
+        # Jeśli nadal brak, spróbuj z ostatnich 5 dni
+        for i in range(2, 7):
+            past_date = today - timedelta(days=i)
+            rate = self.get_usd_pln_rate(past_date)
+            if rate:
+                print(f"✅ Użyto kursu z {past_date}: {rate:.4f}")
+                return rate
+        
+        print("❌ Nie udało się pobrać żadnego kursu USD/PLN!")
+        return None
     
     def get_rate_range(self, currency: str, start_date: date, 
                       end_date: date, table: str = 'a') -> List[Dict]:
@@ -89,6 +120,7 @@ class NBPService:
         url = f"{self.BASE_URL}/exchangerates/rates/{table}/{currency.lower()}/{start_str}/{end_str}/"
         
         try:
+            print(f"🔄 Pobieranie kursów {currency} z zakresu {start_str} - {end_str}...")
             response = self.session.get(url, timeout=15)
             
             if response.status_code == 200:
@@ -108,14 +140,15 @@ class NBPService:
                     # Cache każdy kurs
                     self._cache_rate(f"{currency}/PLN", rate_value, rate_date)
                 
+                print(f"✅ Pobrano {len(rates)} kursów {currency}")
                 return rates
             
             else:
-                print(f"Błąd pobierania zakresu kursów: {response.status_code}")
+                print(f"❌ Błąd pobierania zakresu kursów: {response.status_code}")
                 return []
                 
         except requests.RequestException as e:
-            print(f"Błąd połączenia z NBP: {e}")
+            print(f"❌ Błąd połączenia z NBP: {e}")
             return []
     
     def get_available_currencies(self, table: str = 'a') -> List[Dict]:
@@ -153,7 +186,12 @@ class NBPService:
             (currency_pair, date_str)
         )
         
-        return result[0]['rate'] if result else None
+        if result:
+            rate = result[0]['rate']
+            print(f"💾 Użyto kursu z cache: {currency_pair} = {rate:.4f} ({date_str})")
+            return rate
+        
+        return None
     
     def _cache_rate(self, currency_pair: str, rate: float, date_value: date):
         """Zapisuje kurs w cache."""
@@ -163,13 +201,14 @@ class NBPService:
             "INSERT OR REPLACE INTO exchange_rates (currency_pair, rate, date, source) VALUES (?, ?, ?, ?)",
             (currency_pair, rate, date_str, "NBP")
         )
+        print(f"💾 Zapisano w cache: {currency_pair} = {rate:.4f} ({date_str})")
     
     def _get_previous_working_day_rate(self, currency: str, date_value: date, 
                                      table: str, max_days: int = 10) -> Optional[float]:
         """Znajduje kurs z poprzedniego dnia roboczego."""
         current_date = date_value
         
-        for _ in range(max_days):
+        for i in range(max_days):
             current_date -= timedelta(days=1)
             
             # Pomiń weekendy
@@ -194,12 +233,14 @@ class NBPService:
                     
                     # Cache wynik
                     self._cache_rate(f"{currency}/PLN", rate, current_date)
+                    print(f"✅ Znaleziono kurs z {date_str}: {rate:.4f}")
                     
                     return rate
                     
             except requests.RequestException:
                 continue
         
+        print(f"❌ Nie znaleziono kursu {currency} w ciągu ostatnich {max_days} dni")
         return None
     
     def _get_last_available_rate(self, currency: str, date_value: date) -> Optional[float]:
@@ -208,13 +249,19 @@ class NBPService:
         date_str = date_value.strftime("%Y-%m-%d")
         
         result = execute_query(
-            """SELECT rate FROM exchange_rates 
+            """SELECT rate, date FROM exchange_rates 
                WHERE currency_pair = ? AND date <= ? 
                ORDER BY date DESC LIMIT 1""",
             (currency_pair, date_str)
         )
         
-        return result[0]['rate'] if result else None
+        if result:
+            rate = result[0]['rate']
+            rate_date = result[0]['date']
+            print(f"💾 Użyto ostatniego dostępnego kursu z {rate_date}: {rate:.4f}")
+            return rate
+        
+        return None
     
     def update_current_rates(self, currencies: List[str] = None) -> Dict[str, bool]:
         """
@@ -238,12 +285,12 @@ class NBPService:
                 results[currency] = rate is not None
                 
                 if rate:
-                    print(f"✓ {currency}/PLN: {rate:.4f}")
+                    print(f"✅ {currency}/PLN: {rate:.4f}")
                 else:
-                    print(f"✗ Nie można pobrać kursu {currency}")
+                    print(f"❌ Nie można pobrać kursu {currency}")
                     
             except Exception as e:
-                print(f"✗ Błąd aktualizacji {currency}: {e}")
+                print(f"❌ Błąd aktualizacji {currency}: {e}")
                 results[currency] = False
         
         return results

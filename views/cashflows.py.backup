@@ -119,7 +119,11 @@ def show_overview_tab():
             )
         
         with col2:
+            # NAPRAWIONE - zabezpieczenie przed None
+        if current_usd_rate and current_usd_rate > 0:
             net_flow_pln = net_flow * current_usd_rate
+        else:
+            net_flow_pln = 0.0
             st.metric(
                 f"📊 Przepływ netto {current_year} (PLN)",
                 format_currency(net_flow_pln, "PLN")
