@@ -4,11 +4,11 @@ from datetime import datetime, date, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
 
-from repos.options_repo import OptionsRepository
 from repos.stock_repo import StockRepository
+from repos.options_repo import OptionsRepository
 from utils.formatting import (
     format_currency, format_percentage, format_gain_loss, 
-    format_polish_date, format_days_to_expiry, get_status_color
+    format_polish_date, get_status_color
 )
 
 def show():
@@ -18,7 +18,7 @@ def show():
     
     # Tabs
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📈 Aktywne opcje", "➕ Dodaj opcję", "📊 Wydajność", "⚠️ Wygasające", "📋 Historia"
+        "🟢 Aktywne opcje", "➕ Dodaj opcję", "⚠️ Wygasające", "📊 Wydajność", "📋 Historia"
     ])
     
     with tab1:
@@ -28,147 +28,105 @@ def show():
         show_add_option_tab()
     
     with tab3:
-        show_performance_tab()
+        show_expiring_options_tab()
     
     with tab4:
-        show_expiring_options_tab()
+        show_performance_tab()
     
     with tab5:
         show_history_tab()
 
 def show_active_options_tab():
-    """Wyświetla aktywne opcje."""
+    """Wyświetla aktywne opcje z działającymi przyciskami."""
     
-    st.markdown("### 📈 Aktywne opcje")
+    st.markdown("### 🟢 Aktywne opcje")
     
-    # Podsumowanie opcji
-    summary = OptionsRepository.get_options_summary()
-    
-    if summary:
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric(
-                "📋 Wszystkie opcje", 
-                summary.get('total_options', 0)
-            )
-        
-        with col2:
-            st.metric(
-                "🟢 Aktywne opcje", 
-                summary.get('open_options', 0)
-            )
-        
-        with col3:
-            st.metric(
-                "💰 Aktywne premium", 
-                format_currency(summary.get('active_premium', 0))
-            )
-        
-        with col4:
-            st.metric(
-                "💎 Łączne premium", 
-                format_currency(summary.get('total_premium_received', 0))
-            )
-    
-    # Lista aktywnych opcji
     options = OptionsRepository.get_all_options(include_closed=False)
     
     if options:
-        df = pd.DataFrame(options)
-        
-        # Oblicz dodatkowe kolumny
-        df['total_premium'] = df['premium_received'] * df['quantity']
-        df['days_to_expiry'] = df['days_to_expiry'].fillna(0).astype(int)
-        
-        # Status kolory dla dni do wygaśnięcia
-        def get_expiry_color(days):
-            if days < 0:
-                return "🔴"
-            elif days <= 7:
-                return "🟠"
-            elif days <= 30:
-                return "🟡"
-            else:
-                return "🟢"
-        
-        df['expiry_status'] = df['days_to_expiry'].apply(get_expiry_color)
-        
-        # Formatowanie dla wyświetlenia
-        display_df = df.copy()
-        display_df['strike_price'] = display_df['strike_price'].apply(format_currency)
-        display_df['premium_received'] = display_df['premium_received'].apply(format_currency)
-        display_df['total_premium'] = display_df['total_premium'].apply(format_currency)
-        display_df['current_price_usd'] = display_df['current_price_usd'].apply(format_currency)
-        display_df['intrinsic_value'] = display_df['intrinsic_value'].apply(format_currency)
-        display_df['expiry_date'] = pd.to_datetime(display_df['expiry_date']).dt.strftime('%d.%m.%Y')
-        display_df['open_date'] = pd.to_datetime(display_df['open_date']).dt.strftime('%d.%m.%Y')
-        
-        st.dataframe(
-            display_df[[
-                'symbol', 'option_type', 'strike_price', 'expiry_date', 
-                'expiry_status', 'days_to_expiry', 'quantity', 'premium_received', 
-                'total_premium', 'current_price_usd', 'intrinsic_value'
-            ]].rename(columns={
-                'symbol': 'Symbol',
-                'option_type': 'Typ',
-                'strike_price': 'Strike',
-                'expiry_date': 'Wygaśnięcie',
-                'expiry_status': 'Status',
-                'days_to_expiry': 'Dni do wygaśnięcia',
-                'quantity': 'Ilość',
-                'premium_received': 'Premium/szt',
-                'total_premium': 'Premium całkowite',
-                'current_price_usd': 'Cena akcji',
-                'intrinsic_value': 'Wartość wewnętrzna'
-            }),
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Analiza ryzyka przydziału
-        st.markdown("#### ⚠️ Analiza ryzyka przydziału")
-        
-        risk_options = OptionsRepository.get_assignment_risk()
-        
-        if risk_options:
-            risk_df = pd.DataFrame(risk_options)
-            
-            st.warning(f"🚨 {len(risk_options)} opcji z wysokim ryzykiem przydziału!")
-            
-            # Wyświetl opcje wysokiego ryzyka
-            risk_display = risk_df.copy()
-            risk_display['moneyness_pct'] = risk_display['moneyness_pct'].apply(lambda x: f"{x:.1f}%")
-            risk_display['strike_price'] = risk_display['strike_price'].apply(format_currency)
-            risk_display['current_price_usd'] = risk_display['current_price_usd'].apply(format_currency)
-            
-            st.dataframe(
-                risk_display[['symbol', 'option_type', 'strike_price', 'current_price_usd', 'moneyness_pct', 'days_to_expiry']].rename(columns={
-                    'symbol': 'Symbol',
-                    'option_type': 'Typ',
-                    'strike_price': 'Strike',
-                    'current_price_usd': 'Cena akcji',
-                    'moneyness_pct': 'Moneyness %',
-                    'days_to_expiry': 'Dni do wygaśnięcia'
-                }),
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            st.success("✅ Brak opcji z wysokim ryzykiem przydziału")
-    
+        for option in options:
+            with st.expander(f"📋 {option['symbol']} {option['option_type']} ${option['strike_price']:.2f} - {option['expiry_date']}"):
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.write(f"**Premium/akcja:** ${option['premium_received']:.2f}")
+                    premium_total = option['premium_received'] * option['quantity'] * 100
+                    st.write(f"**Premium całkowite:** ${premium_total:.2f}")
+                    st.write(f"**Kontrakty:** {option['quantity']}")
+                
+                with col2:
+                    st.write(f"**Strike:** ${option['strike_price']:.2f}")
+                    st.write(f"**Otwarcie:** {option['open_date']}")
+                    st.write(f"**Status:** {option['status']}")
+                    if option.get('current_price_usd'):
+                        st.write(f"**Cena akcji:** ${option['current_price_usd']:.2f}")
+                
+                with col3:
+                    st.markdown("#### 🔧 Działania")
+                    
+                    # Buyback
+                    buyback_price_per_share = st.number_input(
+                        "Cena buyback/akcja:", 
+                        min_value=0.01, 
+                        value=max(0.01, option['premium_received'] / 2),
+                        step=0.01,
+                        key=f"buyback_price_{option['id']}"
+                    )
+                    total_buyback = buyback_price_per_share * option['quantity'] * 100
+                    st.caption(f"Całkowity koszt: ${total_buyback:.2f}")
+                    
+                    if st.button("🔄 Buyback", key=f"buyback_{option['id']}"):
+                        if OptionsRepository.buyback_option(option['id'], buyback_price_per_share):
+                            st.success(f"✅ Opcja odkupiona za ${total_buyback:.2f}")
+                            st.rerun()
+                        else:
+                            st.error("❌ Błąd buyback")
+                    
+                    # Expire
+                    if st.button("📅 Wygasła", key=f"expire_{option['id']}"):
+                        if OptionsRepository.expire_option(option['id']):
+                            st.success("✅ Opcja oznaczona jako wygasła")
+                            st.rerun()
+                        else:
+                            st.error("❌ Błąd expire")
+                    
+                    # Delete - działający system
+                    delete_confirm_key = f"delete_confirm_{option['id']}"
+                    
+                    if st.button("🗑️ Usuń", key=f"delete_btn_{option['id']}", type="secondary"):
+                        st.session_state[delete_confirm_key] = True
+                    
+                    if st.session_state.get(delete_confirm_key, False):
+                        st.warning("⚠️ Usunięcie opcji jest nieodwracalne!")
+                        
+                        if st.checkbox(f"Potwierdzam usunięcie opcji {option['symbol']}", key=f"confirm_{option['id']}"):
+                            col_del1, col_del2 = st.columns(2)
+                            
+                            with col_del1:
+                                if st.button("✅ USUŃ", key=f"final_delete_{option['id']}", type="primary"):
+                                    if OptionsRepository.delete_option(option['id']):
+                                        st.success("✅ Opcja usunięta!")
+                                        if delete_confirm_key in st.session_state:
+                                            del st.session_state[delete_confirm_key]
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ Błąd usuwania")
+                            
+                            with col_del2:
+                                if st.button("❌ Anuluj", key=f"cancel_{option['id']}"):
+                                    if delete_confirm_key in st.session_state:
+                                        del st.session_state[delete_confirm_key]
+                                    st.rerun()
     else:
-        st.info("Brak aktywnych opcji. Dodaj pierwszą opcję.")
-
-# W views/options.py - zastąp funkcję show_add_option_tab()
+        st.info("Brak aktywnych opcji. Dodaj pierwszą opcję w zakładce '➕ Dodaj opcję'.")
 
 def show_add_option_tab():
-    """Formularz dodawania nowej opcji z rezerwacją akcji."""
+    """Formularz dodawania nowej opcji z poprawnym obliczaniem premium."""
     
     st.markdown("### ➕ Dodaj nową opcję")
     
-    # Pobierz listę akcji
-    stocks = StockRepository.get_stocks_for_options()
+    # Pobierz akcje
+    stocks = OptionsRepository.get_stocks_for_options()
     
     if not stocks:
         st.warning("⚠️ Brak akcji w portfelu. Najpierw dodaj akcje w sekcji 'Akcje'.")
@@ -182,7 +140,7 @@ def show_add_option_tab():
             selected_stock = st.selectbox(
                 "Akcja bazowa *",
                 options=stocks,
-                format_func=lambda x: f"{x['symbol']} - {x['name']}"
+                format_func=lambda x: f"{x['symbol']} - {x['name']} (posiadasz: {x['quantity']})"
             )
             
             # Typ opcji
@@ -196,7 +154,7 @@ def show_add_option_tab():
             strike_price = st.number_input(
                 "Cena wykonania (USD) *",
                 min_value=0.01,
-                value=100.0,
+                value=selected_stock['current_price_usd'] if selected_stock.get('current_price_usd') else 100.0,
                 step=0.01,
                 format="%.2f"
             )
@@ -209,13 +167,14 @@ def show_add_option_tab():
             )
         
         with col2:
-            # Premium otrzymane
-            premium_received = st.number_input(
+            # Premium otrzymane PER AKCJA
+            premium_per_share = st.number_input(
                 "Premium otrzymane (USD/akcja) *",
                 min_value=0.01,
                 value=1.0,
                 step=0.01,
-                format="%.2f"
+                format="%.2f",
+                help="Premium jakie otrzymujesz za jedną akcję (nie za kontrakt)"
             )
             
             # Ilość kontraktów
@@ -249,26 +208,26 @@ def show_add_option_tab():
             placeholder="Opcjonalne notatki o opcji..."
         )
         
-        # Podsumowanie opcji
-        total_premium = premium_received * quantity * 100  # 100 akcji na kontrakt
+        # POPRAWIONE OBLICZENIA PREMIUM
+        premium_per_contract = premium_per_share * 100  # Premium za 1 kontrakt (100 akcji)
+        total_premium = premium_per_contract * quantity   # Całkowite premium za wszystkie kontrakty
         net_premium = total_premium - commission
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.info(f"💰 Premium całkowite: {format_currency(total_premium)}")
+            st.info(f"💰 Premium/kontrakt: {format_currency(premium_per_contract)}")
         with col2:
-            st.info(f"💸 Prowizja: {format_currency(commission)}")
+            st.info(f"📊 Premium całkowite: {format_currency(total_premium)}")
         with col3:
             st.info(f"💎 Premium netto: {format_currency(net_premium)}")
         
-        # NOWA LOGIKA: Sprawdzenie pokrycia dla covered call
-# Sprawdzenie covered call - UPROSZCZONE (bez dodatkowego wywołania)
+        # Wyjaśnienie
+        st.caption(f"💡 {format_currency(premium_per_share)}/akcja × 100 akcji/kontrakt × {quantity} kontrakt = {format_currency(total_premium)} całkowite")
+        
+        # Sprawdzenie covered call
         if selected_stock and option_type == "CALL":
             shares_needed = quantity * 100
             shares_owned = selected_stock['quantity']
-            
-            # USUŃ to wywołanie jeśli istnieje:
-            # availability = OptionsRepository.check_stock_availability_for_cc(selected_stock['id'], quantity)
             
             if shares_owned >= shares_needed:
                 st.success(f"✅ Covered Call: Posiadasz {shares_owned} akcji (potrzebujesz {shares_needed})")
@@ -284,141 +243,30 @@ def show_add_option_tab():
         
         if submitted:
             try:
-                # UŻYJ NOWEJ FUNKCJI Z REZERWACJĄ
                 option_id = OptionsRepository.add_option(
                     stock_id=selected_stock['id'],
                     option_type=option_type,
                     strike_price=strike_price,
                     expiry_date=expiry_date,
-                    premium_received=premium_received,
+                    premium_received=premium_per_share,  # Zapisujemy premium PER AKCJA
                     quantity=quantity,
                     open_date=open_date,
                     commission=commission,
                     notes=notes
                 )
                 
-                st.success(f"✅ Opcja została dodana z rezerwacją akcji! (ID: {option_id})")
+                st.success(f"✅ Opcja została dodana! (ID: {option_id})")
+                st.success(f"💰 Otrzymane premium: {format_currency(total_premium)}")
                 st.rerun()
-                
-            except ValueError as e:
-                # Błąd braku pokrycia
-                st.error(f"❌ {str(e)}")
-                st.info("💡 Dodaj więcej akcji lub zmniejsz ilość kontraktów")
                 
             except Exception as e:
                 st.error(f"❌ Błąd podczas dodawania opcji: {str(e)}")
 
-def show_performance_tab():
-    """Wyświetla wydajność opcji."""
-    
-    st.markdown("### 📊 Wydajność opcji")
-    
-    # Podsumowanie dochodów
-    summary = OptionsRepository.get_options_summary()
-    current_year = datetime.now().year
-    yearly_income = OptionsRepository.calculate_option_income(current_year)
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            "💰 Łączne premium",
-            format_currency(summary.get('total_premium_received', 0))
-        )
-    
-    with col2:
-        st.metric(
-            f"📅 Premium {current_year}",
-            format_currency(yearly_income.get('total_premium', 0))
-        )
-    
-    with col3:
-        # NAPRAWIONE - zabezpieczenie przed None
-        total_premium_received = summary.get('total_premium_received') or 0
-        active_premium = summary.get('active_premium') or 0
-        expired_premium = total_premium_received - active_premium
-        
-        st.metric(
-            "✅ Premium zrealizowane",
-            format_currency(expired_premium)
-        )
-    
-    with col4:
-        avg_premium = yearly_income.get('avg_premium_per_contract', 0)
-        st.metric(
-            "📊 Śr. premium/kontrakt",
-            format_currency(avg_premium)
-        )
-    
-    # Wykres miesięcznych dochodów
-    monthly_income = OptionsRepository.get_monthly_option_income(current_year)
-    
-    if monthly_income:
-        st.markdown("#### 📈 Miesięczne dochody z opcji")
-        
-        df = pd.DataFrame(monthly_income)
-        
-        fig = px.bar(
-            df,
-            x='year_month',
-            y='premium_received',
-            title=f"Dochody z opcji w {current_year}",
-            labels={'premium_received': 'Premium (USD)', 'year_month': 'Miesiąc'}
-        )
-        
-        fig.update_layout(height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Analiza wydajności poszczególnych opcji
-    performance_data = OptionsRepository.get_options_performance()
-    
-    if performance_data:
-        st.markdown("#### 📋 Wydajność poszczególnych opcji")
-        
-        df = pd.DataFrame(performance_data)
-        
-        # Formatowanie
-        display_df = df.copy()
-        display_df['strike_price'] = display_df['strike_price'].apply(format_currency)
-        display_df['premium_received'] = display_df['premium_received'].apply(format_currency)
-        display_df['total_premium'] = display_df['total_premium'].apply(format_currency)
-        display_df['realized_profit'] = display_df['realized_profit'].apply(format_currency)
-        display_df['expiry_date'] = pd.to_datetime(display_df['expiry_date']).dt.strftime('%d.%m.%Y')
-        display_df['open_date'] = pd.to_datetime(display_df['open_date']).dt.strftime('%d.%m.%Y')
-        
-        # Mapowanie statusów
-        status_map = {
-            'OPEN': '🟢 Aktywna',
-            'EXPIRED': '🟡 Wygasła',
-            'ASSIGNED': '🔴 Przydzielona',
-            'CLOSED': '🔵 Zamknięta'
-        }
-        display_df['status'] = display_df['status'].map(status_map)
-        
-        st.dataframe(
-            display_df[[
-                'symbol', 'option_type', 'strike_price', 'expiry_date',
-                'status', 'total_premium', 'time_decay_pct', 'realized_profit'
-            ]].rename(columns={
-                'symbol': 'Symbol',
-                'option_type': 'Typ',
-                'strike_price': 'Strike',
-                'expiry_date': 'Wygaśnięcie',
-                'status': 'Status',
-                'total_premium': 'Premium',
-                'time_decay_pct': 'Upływ czasu %',
-                'realized_profit': 'Zysk zrealizowany'
-            }),
-            use_container_width=True,
-            hide_index=True
-        )
-
 def show_expiring_options_tab():
-    """Wyświetla opcje wygasające w najbliższym czasie."""
+    """Wyświetla opcje wygasające."""
     
     st.markdown("### ⚠️ Opcje wygasające")
     
-    # Wybór okresu
     days_ahead = st.selectbox(
         "Pokaż opcje wygasające w ciągu:",
         [7, 14, 30, 60],
@@ -430,205 +278,135 @@ def show_expiring_options_tab():
     if expiring_options:
         st.warning(f"⚠️ {len(expiring_options)} opcji wygasa w ciągu {days_ahead} dni!")
         
-        df = pd.DataFrame(expiring_options)
-        
-        # Dodaj kolory dla statusu wygaśnięcia
-        def get_urgency_emoji(days):
-            if days <= 1:
-                return "🚨"
-            elif days <= 3:
-                return "🔴"
-            elif days <= 7:
-                return "🟠"
-            else:
-                return "🟡"
-        
-        df['urgency'] = df['days_to_expiry'].apply(get_urgency_emoji)
-        df['days_to_expiry'] = df['days_to_expiry'].astype(int)
-        
-        # Formatowanie
-        display_df = df.copy()
-        display_df['strike_price'] = display_df['strike_price'].apply(format_currency)
-        display_df['current_price_usd'] = display_df['current_price_usd'].apply(format_currency)
-        display_df['premium_received'] = display_df['premium_received'].apply(format_currency)
-        display_df['expiry_date'] = pd.to_datetime(display_df['expiry_date']).dt.strftime('%d.%m.%Y')
-        
-        st.dataframe(
-            display_df[[
-                'urgency', 'symbol', 'option_type', 'strike_price', 
-                'expiry_date', 'days_to_expiry', 'current_price_usd', 'premium_received'
-            ]].rename(columns={
-                'urgency': 'Pilność',
-                'symbol': 'Symbol',
-                'option_type': 'Typ',
-                'strike_price': 'Strike',
-                'expiry_date': 'Wygaśnięcie',
-                'days_to_expiry': 'Dni pozostało',
-                'current_price_usd': 'Cena akcji',
-                'premium_received': 'Premium'
-            }),
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Akcje dla wygasających opcji
-        st.markdown("#### 🎯 Zalecane akcje")
-        
-        for idx, option in enumerate(expiring_options[:3]):  # Pokaż top 3
-            with st.expander(f"{option['symbol']} {option['option_type']} ${option['strike_price']:.2f}"):
-                
-                current_price = option['current_price_usd']
-                strike_price = option['strike_price']
-                option_type = option['option_type']
+        for option in expiring_options:
+            with st.expander(f"⚠️ {option['symbol']} {option['option_type']} ${option['strike_price']:.2f} - wygasa {option['expiry_date']}"):
                 
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.write(f"**Aktualna cena:** {format_currency(current_price)}")
-                    st.write(f"**Strike:** {format_currency(strike_price)}")
-                    st.write(f"**Dni do wygaśnięcia:** {int(option['days_to_expiry'])}")
+                    st.write(f"**Dni do wygaśnięcia:** {option['days_to_expiry']:.0f}")
+                    st.write(f"**Premium otrzymane:** ${option['premium_received']:.2f}/akcja")
+                    st.write(f"**Kontrakty:** {option['quantity']}")
                 
                 with col2:
-                    if option_type == 'CALL':
-                        if current_price > strike_price:
-                            st.error("🔴 W pieniądzu - ryzyko przydziału!")
-                            st.write("💡 Rozważ zamknięcie pozycji")
-                        else:
-                            st.success("🟢 Poza pieniądzem")
-                            st.write("💡 Prawdopodobnie wygaśnie bezwartościowo")
-                    else:  # PUT
-                        if current_price < strike_price:
-                            st.error("🔴 W pieniądzu - ryzyko przydziału!")
-                            st.write("💡 Rozważ zamknięcie pozycji")
-                        else:
-                            st.success("🟢 Poza pieniądzem")
-                            st.write("💡 Prawdopodobnie wygaśnie bezwartościowo")
-                
-                # Przycisk do aktualizacji statusu
-                if st.button(f"Zamknij opcję {option['symbol']}", key=f"close_{idx}"):
-                    if OptionsRepository.update_option_status(option['id'], 'CLOSED', date.today()):
-                        st.success("Opcja została zamknięta!")
-                        st.rerun()
-                    else:
-                        st.error("Błąd podczas zamykania opcji")
-    
+                    if option.get('current_price_usd'):
+                        current_price = option['current_price_usd']
+                        strike_price = option['strike_price']
+                        
+                        if option['option_type'] == 'CALL':
+                            if current_price > strike_price:
+                                st.error("🔴 W pieniądzu - ryzyko przydziału!")
+                            else:
+                                st.success("🟢 Poza pieniądzem")
+                        else:  # PUT
+                            if current_price < strike_price:
+                                st.error("🔴 W pieniądzu - ryzyko przydziału!")
+                            else:
+                                st.success("🟢 Poza pieniądzem")
     else:
         st.success(f"✅ Brak opcji wygasających w ciągu {days_ahead} dni")
 
-def show_history_tab():
-    """Wyświetla historię wszystkich opcji."""
+def show_performance_tab():
+    """Wyświetla wydajność opcji."""
     
-    st.markdown("### 📋 Historia opcji")
+    st.markdown("### 📊 Wydajność opcji")
     
-    # Filtry
-    col1, col2, col3 = st.columns(3)
+    # Wybór roku
+    current_year = datetime.now().year
+    selected_year = st.selectbox(
+        "Rok",
+        options=list(range(current_year, 2020, -1)),
+        index=0
+    )
     
-    with col1:
-        # Filtr statusu
-        status_filter = st.selectbox(
-            "Status opcji",
-            ["Wszystkie", "OPEN", "EXPIRED", "ASSIGNED", "CLOSED"],
-            format_func=lambda x: {
-                "Wszystkie": "Wszystkie",
-                "OPEN": "🟢 Aktywne",
-                "EXPIRED": "🟡 Wygasłe", 
-                "ASSIGNED": "🔴 Przydzielone",
-                "CLOSED": "🔵 Zamknięte"
-            }[x]
-        )
+    # Pobierz dochód z opcji
+    yearly_income = OptionsRepository.calculate_option_income(selected_year)
     
-    with col2:
-        # Filtr typu opcji
-        type_filter = st.selectbox(
-            "Typ opcji",
-            ["Wszystkie", "CALL", "PUT"],
-            format_func=lambda x: x if x == "Wszystkie" else ("Call" if x == "CALL" else "Put")
-        )
-    
-    with col3:
-        # Filtr roku
-        year_filter = st.selectbox(
-            "Rok",
-            ["Wszystkie"] + [str(year) for year in range(datetime.now().year, 2020, -1)]
-        )
-    
-    # Pobierz wszystkie opcje z filtrami
-    if status_filter == "Wszystkie":
-        options = OptionsRepository.get_all_options(include_closed=True)
-    else:
-        options = [opt for opt in OptionsRepository.get_all_options(include_closed=True) 
-                  if opt['status'] == status_filter]
-    
-    # Zastosuj dodatkowe filtry
-    if type_filter != "Wszystkie":
-        options = [opt for opt in options if opt['option_type'] == type_filter]
-    
-    if year_filter != "Wszystkie":
-        options = [opt for opt in options 
-                  if datetime.strptime(opt['open_date'], '%Y-%m-%d').year == int(year_filter)]
-    
-    if options:
-        df = pd.DataFrame(options)
-        
-        # Oblicz dodatkowe kolumny
-        df['total_premium'] = df['premium_received'] * df['quantity']
-        
-        # Formatowanie
-        display_df = df.copy()
-        display_df['strike_price'] = display_df['strike_price'].apply(format_currency)
-        display_df['premium_received'] = display_df['premium_received'].apply(format_currency)
-        display_df['total_premium'] = display_df['total_premium'].apply(format_currency)
-        display_df['expiry_date'] = pd.to_datetime(display_df['expiry_date']).dt.strftime('%d.%m.%Y')
-        display_df['open_date'] = pd.to_datetime(display_df['open_date']).dt.strftime('%d.%m.%Y')
-        
-        # Mapowanie statusów z kolorami
-        status_map = {
-            'OPEN': '🟢 Aktywna',
-            'EXPIRED': '🟡 Wygasła',
-            'ASSIGNED': '🔴 Przydzielona',
-            'CLOSED': '🔵 Zamknięta'
-        }
-        display_df['status'] = display_df['status'].map(status_map)
-        
-        st.dataframe(
-            display_df[[
-                'symbol', 'option_type', 'strike_price', 'expiry_date',
-                'open_date', 'status', 'quantity', 'premium_received', 'total_premium'
-            ]].rename(columns={
-                'symbol': 'Symbol',
-                'option_type': 'Typ',
-                'strike_price': 'Strike',
-                'expiry_date': 'Wygaśnięcie',
-                'open_date': 'Data otwarcia',
-                'status': 'Status',
-                'quantity': 'Ilość',
-                'premium_received': 'Premium/szt',
-                'total_premium': 'Premium całkowite'
-            }),
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Statystyki
-        st.markdown("#### 📊 Statystyki")
-        
+    if yearly_income and yearly_income.get('total_contracts', 0) > 0:
+        # Podsumowanie
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            total_contracts = len(options)
-            st.metric("📋 Łączne kontrakty", total_contracts)
+            st.metric("📋 Kontrakty", yearly_income.get('total_contracts', 0))
         
         with col2:
-            total_premium = sum(opt['premium_received'] * opt['quantity'] for opt in options)
-            st.metric("💰 Łączne premium", format_currency(total_premium))
+            st.metric("💰 Łączne premium", format_currency(yearly_income.get('total_premium', 0)))
         
         with col3:
-            call_count = len([opt for opt in options if opt['option_type'] == 'CALL'])
-            st.metric("📞 Opcje Call", call_count)
+            st.metric("📅 Premium 2025", format_currency(yearly_income.get('total_premium', 0)))
         
         with col4:
-            put_count = len([opt for opt in options if opt['option_type'] == 'PUT'])
-            st.metric("📉 Opcje Put", put_count)
+            realized = yearly_income.get('expired_premium', 0) + yearly_income.get('assigned_premium', 0)
+            st.metric("✅ Premium zrealizowane", format_currency(realized))
     
     else:
-        st.info("Brak opcji spełniających kryteria filtrowania.")
+        st.info(f"Brak opcji w {selected_year} roku.")
+
+def show_history_tab():
+    """Wyświetla historię opcji z możliwością usuwania."""
+    
+    st.markdown("### 📋 Historia opcji")
+    
+    # Pobierz wszystkie opcje
+    all_options = OptionsRepository.get_all_options(include_closed=True)
+    
+    if all_options:
+        # Tabela z opcjami
+        for option in all_options:
+            status_icon = {
+                'OPEN': '🟢',
+                'CLOSED': '🔵', 
+                'EXPIRED': '🟡',
+                'ASSIGNED': '🔴'
+            }.get(option['status'], '⚪')
+            
+            with st.expander(f"{status_icon} {option['symbol']} {option['option_type']} ${option['strike_price']:.2f} - {option['open_date']} ({option['status']})"):
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.write(f"**Premium/akcja:** ${option['premium_received']:.2f}")
+                    premium_total = option['premium_received'] * option['quantity'] * 100
+                    st.write(f"**Premium całkowite:** ${premium_total:.2f}")
+                    st.write(f"**Kontrakty:** {option['quantity']}")
+                    st.write(f"**Status:** {option['status']}")
+                
+                with col2:
+                    st.write(f"**Strike:** ${option['strike_price']:.2f}")
+                    st.write(f"**Otwarcie:** {option['open_date']}")
+                    if option.get('close_date'):
+                        st.write(f"**Zamknięcie:** {option['close_date']}")
+                    st.write(f"**Wygaśnięcie:** {option['expiry_date']}")
+                
+                with col3:
+                    # Usuwanie opcji z historii
+                    st.markdown("#### 🗑️ Zarządzanie")
+                    
+                    delete_key = f"history_delete_{option['id']}"
+                    
+                    if st.button("🗑️ Usuń z historii", key=f"hist_del_{option['id']}", type="secondary"):
+                        st.session_state[delete_key] = True
+                    
+                    if st.session_state.get(delete_key, False):
+                        st.warning("⚠️ Usunięcie opcji z bazy jest nieodwracalne!")
+                        
+                        if st.checkbox(f"Potwierdzam usunięcie", key=f"hist_confirm_{option['id']}"):
+                            col_a, col_b = st.columns(2)
+                            
+                            with col_a:
+                                if st.button("✅ USUŃ", key=f"hist_final_{option['id']}", type="primary"):
+                                    if OptionsRepository.delete_option(option['id']):
+                                        st.success("✅ Opcja usunięta z bazy!")
+                                        if delete_key in st.session_state:
+                                            del st.session_state[delete_key]
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ Błąd usuwania")
+                            
+                            with col_b:
+                                if st.button("❌ Anuluj", key=f"hist_cancel_{option['id']}"):
+                                    if delete_key in st.session_state:
+                                        del st.session_state[delete_key]
+                                    st.rerun()
+    else:
+        st.info("Brak opcji w historii.")

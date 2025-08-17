@@ -66,12 +66,31 @@ class StockRepository:
             ORDER BY st.transaction_date DESC
         """
         return [dict(row) for row in execute_query(query, (stock_id,))]
+        
+    def get_portfolio_summary() -> Dict[str, Any]:
+        """Pobiera podsumowanie całego portfela akcji."""
+        query = """
+            SELECT 
+                COUNT(*) as total_positions,
+                SUM(quantity * avg_price_usd) as total_cost,
+                SUM(quantity * current_price_usd) as current_value,
+                SUM((quantity * current_price_usd) - (quantity * avg_price_usd)) as unrealized_gain_loss
+            FROM stocks
+            WHERE quantity > 0
+        """
+        result = execute_query(query)
+        return dict(result[0]) if result else {
+            'total_positions': 0,
+            'total_cost': 0,
+            'current_value': 0,
+            'unrealized_gain_loss': 0
+        }
     
     @staticmethod
     def add_transaction(stock_id: int, transaction_type: str, quantity: int, 
                        price: float, commission: float, transaction_date: date, 
                        notes: str = None) -> int:
-        """Dodaje transakcję akcji z obsługą lotów."""
+        """Dodaje transakcję akcji z obsługą lotów i przeliczeniem PLN."""
         
         # Pobierz kurs NBP z dnia poprzedzającego transakcję
         from services.nbp import nbp_service
@@ -91,7 +110,9 @@ class StockRepository:
         price_pln = price * usd_pln_rate
         commission_pln = commission * usd_pln_rate
         
-        # NAPRAWIONY INSERT - dodane brakujące kolumny
+        print(f"💱 Kurs NBP: {usd_pln_rate:.4f}, Cena PLN: {price_pln:.2f}")
+        
+        # INSERT z wszystkimi polami PLN
         query = """
             INSERT INTO stock_transactions 
             (stock_id, transaction_type, quantity, price_usd, commission_usd, 
@@ -105,6 +126,8 @@ class StockRepository:
              transaction_date, usd_pln_rate, price_pln, commission_pln, notes)
         )
         
+        print(f"✅ Transakcja {transaction_id} zapisana z kursem {usd_pln_rate:.4f}")
+        
         # Obsługa lotów
         if transaction_type == 'BUY':
             try:
@@ -115,13 +138,13 @@ class StockRepository:
                     commission, transaction_date, usd_pln_rate
                 )
                 
-                print(f"📦 Utworzono lot {lot_id} dla {quantity} akcji po ${price:.2f} (kurs {usd_pln_rate:.4f})")
+                print(f"📦 Utworzono lot {lot_id} dla {quantity} akcji po ${price:.2f}")
                 
             except Exception as e:
                 print(f"⚠️ Błąd tworzenia lotu: {e}")
         
         elif transaction_type == 'SELL':
-# NOWE: Sprawdź czy można sprzedać (rezerwacje)
+            # Sprawdź czy można sprzedać (rezerwacje)
             try:
                 from repos.stock_lots_repo import StockLotsRepository
                 availability = StockLotsRepository.check_shares_available_for_sale(stock_id, quantity)
@@ -158,9 +181,6 @@ class StockRepository:
                 raise e
             except Exception as e:
                 print(f"⚠️ Błąd przetwarzania sprzedaży: {e}")
-                # Usuń transakcję przy błędzie
-                execute_update("DELETE FROM stock_transactions WHERE id = ?", (transaction_id,))
-                raise e
         
         # Aktualizuj ilość i średnią cenę akcji
         StockRepository._update_stock_position(stock_id)

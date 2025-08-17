@@ -13,7 +13,8 @@ class OptionsRepository:
                 s.symbol,
                 s.name as stock_name,
                 s.current_price_usd,
-                (julianday('now') - julianday(o.expiry_date)) as days_to_expiry,
+                s.quantity as stock_quantity,
+                (julianday(o.expiry_date) - julianday('now')) as days_to_expiry,
                 CASE 
                     WHEN o.option_type = 'CALL' AND s.current_price_usd > o.strike_price 
                     THEN s.current_price_usd - o.strike_price
@@ -40,7 +41,8 @@ class OptionsRepository:
                 o.*,
                 s.symbol,
                 s.name as stock_name,
-                s.current_price_usd
+                s.current_price_usd,
+                s.quantity as stock_quantity
             FROM options o
             JOIN stocks s ON o.stock_id = s.id
             WHERE o.id = ?
@@ -52,45 +54,38 @@ class OptionsRepository:
     def add_option(stock_id: int, option_type: str, strike_price: float,
                    expiry_date: date, premium_received: float, quantity: int,
                    open_date: date, commission: float = 0.0, notes: str = None) -> int:
-        """Dodaje nową opcję z automatyczną rezerwacją akcji dla covered calls."""
+        """Dodaje nową opcję z prostą walidacją."""
         
-        # NOWE: Sprawdź covered call i zarezerwuj akcje
+        # Sprawdź dostępność akcji dla covered call (uproszczone)
         if option_type == "CALL":
-            shares_needed = quantity * 100  # 1 kontrakt = 100 akcji
+            shares_needed = quantity * 100
             
-            try:
-                # Sprawdź dostępność akcji
-                from repos.stock_lots_repo import StockLotsRepository
-                availability = StockLotsRepository.check_shares_available_for_sale(stock_id, shares_needed)
-                
-                if not availability['can_sell']:
-                    raise ValueError(f"Niewystarczająca ilość akcji. Dostępne: {availability['available_shares']}, potrzebne: {shares_needed}")
-                
-                print(f"✅ Dostępne akcje: {availability['available_shares']}, potrzebne: {shares_needed}")
-                
-            except Exception as e:
-                raise ValueError(f"Błąd sprawdzania dostępności akcji: {e}")
+            stock_query = "SELECT quantity FROM stocks WHERE id = ?"
+            stock_result = execute_query(stock_query, (stock_id,))
+            
+            if not stock_result:
+                raise ValueError("Nie znaleziono akcji w portfelu")
+            
+            shares_owned = stock_result[0]['quantity']
+            
+            if shares_owned < shares_needed:
+                raise ValueError(f"Niewystarczająca ilość akcji. Posiadasz: {shares_owned}, potrzebne: {shares_needed}")
         
-        # Pobierz kurs NBP z dnia poprzedzającego
+        # Pobierz kurs NBP
         from services.nbp import nbp_service
         from datetime import timedelta
         
         try:
             prev_date = open_date - timedelta(days=1)
-            usd_pln_rate = nbp_service.get_usd_pln_rate(prev_date)
-            if not usd_pln_rate:
-                usd_pln_rate = nbp_service.get_usd_pln_rate(open_date) or 4.0
-        except Exception as e:
-            print(f"⚠️ Błąd pobierania kursu NBP: {e}")
-            usd_pln_rate = 4.0
+            usd_pln_rate = nbp_service.get_usd_pln_rate(prev_date) or 3.65
+        except:
+            usd_pln_rate = 3.65
         
         # Oblicz kwoty PLN
-        premium_pln = premium_received * usd_pln_rate
+        premium_pln = premium_received * quantity * usd_pln_rate
         commission_pln = commission * usd_pln_rate
         
-        print(f"💰 Inserting option: premium_pln={premium_pln}, commission_pln={commission_pln}")
-        
-        # POPRAWIONE INSERT - z kursami NBP
+        # Dodaj opcję
         query = """
             INSERT INTO options 
             (stock_id, option_type, strike_price, expiry_date, premium_received, 
@@ -106,34 +101,74 @@ class OptionsRepository:
         ))
         
         print(f"✅ Opcja utworzona z ID: {option_id}")
-        
-        # NOWE: Zarezerwuj akcje dla covered call
-        if option_type == "CALL":
-            try:
-                from repos.stock_lots_repo import StockLotsRepository
-                print(f"🔒 Próbuję zarezerwować {shares_needed} akcji dla opcji {option_id}")
-                StockLotsRepository.reserve_shares_for_option(option_id, stock_id, shares_needed)
-                print(f"🔒 Zarezerwowano {shares_needed} akcji dla opcji {option_id}")
-                
-            except Exception as e:
-                print(f"❌ Błąd rezerwacji: {e}")
-                # Jeśli rezerwacja się nie powiodła, usuń opcję
-                execute_update("DELETE FROM options WHERE id = ?", (option_id,))
-                raise ValueError(f"Nie udało się zarezerwować akcji: {e}")
-        
         return option_id
+    
+    @staticmethod
+    def buyback_option(option_id: int, buyback_price: float, buyback_date: date = None) -> bool:
+        """Odkupuje opcję."""
+        if buyback_date is None:
+            buyback_date = date.today()
+        
+        try:
+            query = "UPDATE options SET status = 'CLOSED', close_date = ? WHERE id = ?"
+            success = execute_update(query, (buyback_date, option_id)) > 0
+            
+            if success:
+                print(f"✅ Opcja {option_id} odkupiona za ${buyback_price:.2f}")
+            
+            return success
+            
+        except Exception as e:
+            print(f"❌ Błąd buyback: {e}")
+            return False
+    
+    @staticmethod
+    def expire_option(option_id: int) -> bool:
+        """Oznacza opcję jako wygasłą."""
+        try:
+            query = "UPDATE options SET status = 'EXPIRED', close_date = ? WHERE id = ?"
+            success = execute_update(query, (date.today(), option_id)) > 0
+            
+            if success:
+                print(f"✅ Opcja {option_id} oznaczona jako wygasła")
+            
+            return success
+            
+        except Exception as e:
+            print(f"❌ Błąd expire: {e}")
+            return False
+    
+    @staticmethod
+    def delete_option(option_id: int) -> bool:
+        """Usuwa opcję z bazy."""
+        try:
+            success = execute_update("DELETE FROM options WHERE id = ?", (option_id,)) > 0
+            
+            if success:
+                print(f"✅ Opcja {option_id} usunięta z bazy")
+            
+            return success
+            
+        except Exception as e:
+            print(f"❌ Błąd delete: {e}")
+            return False
     
     @staticmethod
     def update_option_status(option_id: int, status: str, close_date: date = None) -> bool:
         """Aktualizuje status opcji."""
-        if close_date:
-            query = "UPDATE options SET status = ?, close_date = ? WHERE id = ?"
-            params = (status, close_date, option_id)
-        else:
-            query = "UPDATE options SET status = ? WHERE id = ?"
-            params = (status, option_id)
-        
-        return execute_update(query, params) > 0
+        try:
+            if close_date:
+                query = "UPDATE options SET status = ?, close_date = ? WHERE id = ?"
+                params = (status, close_date, option_id)
+            else:
+                query = "UPDATE options SET status = ? WHERE id = ?"
+                params = (status, option_id)
+            
+            return execute_update(query, params) > 0
+            
+        except Exception as e:
+            print(f"❌ Błąd update status: {e}")
+            return False
     
     @staticmethod
     def get_options_by_stock(stock_id: int) -> List[Dict[str, Any]]:
@@ -184,11 +219,18 @@ class OptionsRepository:
             FROM options
         """
         result = execute_query(query)
-        return dict(result[0]) if result else {}
+        data = dict(result[0]) if result else {}
+        
+        # Konwertuj None na 0
+        for key, value in data.items():
+            if value is None:
+                data[key] = 0
+        
+        return data
     
     @staticmethod
     def get_covered_calls() -> List[Dict[str, Any]]:
-        """Pobiera wszystkie covered calls (opcje call na akcje które posiadamy)."""
+        """Pobiera wszystkie covered calls."""
         query = """
             SELECT 
                 o.*,
@@ -265,7 +307,14 @@ class OptionsRepository:
             params.append(str(year))
         
         result = execute_query(base_query, params)
-        return dict(result[0]) if result else {}
+        data = dict(result[0]) if result else {}
+        
+        # Konwertuj None na 0
+        for key, value in data.items():
+            if value is None:
+                data[key] = 0
+        
+        return data
     
     @staticmethod
     def get_options_for_tax_calculation(year: int) -> List[Dict[str, Any]]:
@@ -276,12 +325,10 @@ class OptionsRepository:
                 s.symbol
             FROM options o
             JOIN stocks s ON o.stock_id = s.id
-            WHERE (strftime('%Y', o.open_date) = ? 
-                   OR (o.close_date IS NOT NULL AND strftime('%Y', o.close_date) = ?))
-            AND o.status != 'OPEN'
+            WHERE strftime('%Y', o.open_date) = ?
             ORDER BY o.open_date
         """
-        return [dict(row) for row in execute_query(query, (str(year), str(year)))]
+        return [dict(row) for row in execute_query(query, (str(year),))]
     
     @staticmethod
     def get_assignment_risk() -> List[Dict[str, Any]]:
@@ -315,11 +362,6 @@ class OptionsRepository:
         return [dict(row) for row in execute_query(query)]
     
     @staticmethod
-    def delete_option(option_id: int) -> bool:
-        """Usuwa opcję."""
-        return execute_update("DELETE FROM options WHERE id = ?", (option_id,)) > 0
-    
-    @staticmethod
     def get_monthly_option_income(year: int) -> List[Dict[str, Any]]:
         """Pobiera miesięczny dochód z opcji."""
         query = """
@@ -336,3 +378,14 @@ class OptionsRepository:
             ORDER BY year_month
         """
         return [dict(row) for row in execute_query(query, (str(year),))]
+    
+    @staticmethod
+    def get_stocks_for_options() -> List[Dict[str, Any]]:
+        """Pobiera akcje dostępne do wystawienia opcji (tylko te z quantity > 0)."""
+        query = """
+            SELECT id, symbol, name, quantity, current_price_usd
+            FROM stocks 
+            WHERE quantity > 0
+            ORDER BY symbol
+        """
+        return [dict(row) for row in execute_query(query)]

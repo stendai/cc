@@ -427,3 +427,129 @@ class StockLotsRepository:
             'available_shares': total_available,
             'lots_breakdown': lots
         }  
+        
+def show_active_options_tab():
+    """Wyświetla aktywne opcje."""
+    
+    st.markdown("### 🟢 Aktywne opcje")
+    
+    # Pobierz aktywne opcje
+    options = OptionsRepository.get_all_options(include_closed=False)
+    
+    if options:
+        for idx, option in enumerate(options):
+            with st.expander(f"📋 {option['symbol']} {option['option_type']} ${option['strike_price']:.2f} - wygasa {option['expiry_date']}"):
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Premium otrzymane", format_currency(option['premium_received']))
+                    st.metric("Ilość kontraktów", option['quantity'])
+                
+                with col2:
+                    st.metric("Strike price", format_currency(option['strike_price']))
+                    st.metric("Data otwarcia", option['open_date'])
+                
+                with col3:
+                    days_to_expiry = option.get('days_to_expiry', 0)
+                    st.metric("Dni do wygaśnięcia", f"{days_to_expiry:.0f}")
+                    
+                    if option.get('current_price_usd'):
+                        st.metric("Cena akcji", format_currency(option['current_price_usd']))
+                
+                with col4:
+                    st.markdown("#### 🔧 Akcje")
+                    
+                    # Przyciski zarządzania
+                    col_buy, col_exp, col_del = st.columns(3)
+                    
+                    with col_buy:
+                        if st.button("🔄 Buyback", key=f"buyback_{option['id']}", help="Odkup opcję"):
+                            buyback_price = st.number_input(
+                                f"Cena odkupu opcji {option['symbol']}",
+                                min_value=0.01,
+                                value=0.01,
+                                step=0.01,
+                                format="%.2f",
+                                key=f"buyback_price_{option['id']}"
+                            )
+                            
+                            if st.button("Potwierdź buyback", key=f"confirm_buyback_{option['id']}"):
+                                try:
+                                    # Zaktualizuj status na CLOSED
+                                    if OptionsRepository.update_option_status(option['id'], 'CLOSED', date.today()):
+                                        # Usuń rezerwację akcji jeśli to covered call
+                                        if option['option_type'] == 'CALL':
+                                            from repos.stock_lots_repo import StockLotsRepository
+                                            StockLotsRepository.release_option_reservation(option['id'])
+                                        
+                                        st.success(f"✅ Opcja odkupiona za ${buyback_price:.2f}")
+                                        st.rerun()
+                                    else:
+                                        st.error("Błąd podczas buyback")
+                                except Exception as e:
+                                    st.error(f"Błąd: {e}")
+                    
+                    with col_exp:
+                        if st.button("📅 Expired", key=f"expired_{option['id']}", help="Oznacz jako wygasłą"):
+                            try:
+                                if OptionsRepository.update_option_status(option['id'], 'EXPIRED', option['expiry_date']):
+                                    # Usuń rezerwację akcji
+                                    if option['option_type'] == 'CALL':
+                                        from repos.stock_lots_repo import StockLotsRepository
+                                        StockLotsRepository.release_option_reservation(option['id'])
+                                    
+                                    st.success("✅ Opcja oznaczona jako wygasła")
+                                    st.rerun()
+                                else:
+                                    st.error("Błąd podczas ustawiania statusu")
+                            except Exception as e:
+                                st.error(f"Błąd: {e}")
+                    
+                    with col_del:
+                        if st.button("🗑️ Usuń", key=f"delete_{option['id']}", help="Usuń opcję z bazy"):
+                            if st.checkbox(f"Potwierdź usunięcie opcji {option['symbol']}", key=f"confirm_delete_{option['id']}"):
+                                try:
+                                    # Usuń rezerwację akcji przed usunięciem opcji
+                                    if option['option_type'] == 'CALL':
+                                        from repos.stock_lots_repo import StockLotsRepository
+                                        StockLotsRepository.release_option_reservation(option['id'])
+                                    
+                                    # Usuń opcję z bazy
+                                    if OptionsRepository.delete_option(option['id']):
+                                        st.success("✅ Opcja usunięta z bazy danych")
+                                        st.rerun()
+                                    else:
+                                        st.error("Błąd podczas usuwania")
+                                except Exception as e:
+                                    st.error(f"Błąd: {e}")
+                
+                # Status opcji i analiza
+                if option.get('current_price_usd') and option.get('strike_price'):
+                    current_price = option['current_price_usd']
+                    strike_price = option['strike_price']
+                    
+                    if option['option_type'] == 'CALL':
+                        if current_price > strike_price:
+                            st.error("🔴 W pieniądzu - ryzyko przydziału!")
+                        else:
+                            st.success("🟢 Poza pieniądzem")
+                    else:  # PUT
+                        if current_price < strike_price:
+                            st.error("🔴 W pieniądzu - ryzyko przydziału!")
+                        else:
+                            st.success("🟢 Poza pieniądzem")
+    else:
+        st.info("Brak aktywnych opcji. Dodaj pierwszą opcję w zakładce '➕ Dodaj opcję'.")
+
+# DODAJ TAKŻE METODĘ DO RELEASE REZERWACJI W stock_lots_repo.py:
+
+    def release_option_reservation(option_id: int) -> bool:
+        """Usuwa rezerwację akcji dla opcji."""
+        try:
+            from db import execute_update
+            result = execute_update("DELETE FROM option_reservations WHERE option_id = ?", (option_id,))
+            print(f"🔓 Usunięto rezerwację dla opcji {option_id}")
+            return result > 0
+        except Exception as e:
+            print(f"❌ Błąd usuwania rezerwacji: {e}")
+        return False    

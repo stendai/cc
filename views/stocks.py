@@ -384,6 +384,31 @@ def show_transactions_history_tab():
     except Exception as e:
         st.error(f"Błąd pobierania transakcji: {e}")
         st.exception(e)  # Dodaj szczegóły błędu dla debugowania
+        
+
+        # Przycisk usuwania transakcji
+        st.markdown("#### 🗑️ Usuwanie transakcji")
+        st.warning("⚠️ Usuwanie transakcji może wpłynąć na obliczenia podatkowe!")
+        
+        if transactions:
+            transaction_to_delete = st.selectbox(
+                "Wybierz transakcję do usunięcia:",
+                transactions,
+                format_func=lambda x: f"{x['transaction_date']} - {x['symbol']} {x['transaction_type']} {x['quantity']} @ ${x['price_usd']:.2f}"
+            )
+            
+            if st.button("🗑️ Usuń wybraną transakcję"):
+                confirm = st.checkbox("Potwierdzam usunięcie transakcji")
+                if confirm:
+                    try:
+                        from db import execute_update
+                        if execute_update("DELETE FROM stock_transactions WHERE id = ?", (transaction_to_delete['id'],)):
+                            st.success("✅ Transakcja usunięta")
+                            st.rerun()
+                        else:
+                            st.error("❌ Błąd usuwania")
+                    except Exception as e:
+                        st.error(f"❌ Błąd: {e}")
 
 def show_analysis_tab():
     """Wyświetla analizę portfela akcji."""
