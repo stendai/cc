@@ -4,6 +4,7 @@ from db import execute_query, execute_insert, execute_update
 
 class StockLotsRepository:
     
+    
     @staticmethod
     def get_all_lots(stock_id: int = None, include_closed: bool = False) -> List[Dict[str, Any]]:
         """Pobiera wszystkie loty akcji."""
@@ -311,7 +312,6 @@ class StockLotsRepository:
         
         return preview
     
-    @staticmethod
     def update_lot_rates(lot_id: int, new_usd_pln_rate: float) -> bool:
         """Aktualizuje kurs USD/PLN dla lotu i przelicza ceny PLN."""
         # Pobierz aktualne dane lotu
@@ -334,3 +334,96 @@ class StockLotsRepository:
             new_usd_pln_rate, new_purchase_price_pln, 
             new_commission_pln, lot_id
         )) > 0
+        
+    @staticmethod
+    def reserve_shares_for_option(option_id: int, stock_id: int, shares_needed: int) -> bool:
+        """Rezerwuje akcje FIFO dla covered call."""
+        
+        # Pobierz dostępne loty (FIFO - najstarsze pierwsze)
+        available_lots_query = """
+            SELECT 
+                sl.id,
+                sl.lot_number,
+                sl.remaining_quantity,
+                sl.purchase_date,
+                COALESCE(SUM(opt_res.reserved_quantity), 0) as already_reserved
+            FROM stock_lots sl
+            LEFT JOIN option_reservations opt_res ON sl.id = opt_res.lot_id
+            WHERE sl.stock_id = ? AND sl.remaining_quantity > 0
+            GROUP BY sl.id
+            HAVING (sl.remaining_quantity - COALESCE(SUM(opt_res.reserved_quantity), 0)) > 0
+            ORDER BY sl.purchase_date, sl.lot_number
+        """
+        
+        available_lots = execute_query(available_lots_query, (stock_id,))
+        
+        if not available_lots:
+            raise ValueError("Brak dostępnych akcji do rezerwacji")
+        
+        # Sprawdź czy mamy wystarczająco akcji
+        total_available = sum(lot['remaining_quantity'] - lot['already_reserved'] for lot in available_lots)
+        
+        if total_available < shares_needed:
+            raise ValueError(f"Niewystarczająca ilość akcji. Dostępne: {total_available}, potrzebne: {shares_needed}")
+        
+        # Rezerwuj akcje FIFO
+        remaining_to_reserve = shares_needed
+        reservations_made = []
+        
+        for lot in available_lots:
+            if remaining_to_reserve <= 0:
+                break
+            
+            available_in_lot = lot['remaining_quantity'] - lot['already_reserved']
+            quantity_to_reserve = min(remaining_to_reserve, available_in_lot)
+            
+            # Utwórz rezerwację
+            reservation_id = execute_insert("""
+                INSERT INTO option_reservations 
+                (option_id, lot_id, reserved_quantity)
+                VALUES (?, ?, ?)
+            """, (option_id, lot['id'], quantity_to_reserve))
+            
+            reservations_made.append({
+                'reservation_id': reservation_id,
+                'lot_id': lot['id'],
+                'lot_number': lot['lot_number'],
+                'quantity_reserved': quantity_to_reserve
+            })
+            
+            remaining_to_reserve -= quantity_to_reserve
+        
+        print(f"✅ Zarezerwowano {shares_needed} akcji dla opcji {option_id}")
+        for res in reservations_made:
+            print(f"   📦 Lot #{res['lot_number']}: {res['quantity_reserved']} akcji")
+        
+        return True
+    
+    @staticmethod
+    def check_shares_available_for_sale(stock_id: int, shares_to_sell: int) -> Dict[str, Any]:
+        """Sprawdza czy można sprzedać akcje (czy nie są zarezerwowane)."""
+        
+        # Pobierz dostępne loty do sprzedaży (po odjęciu rezerwacji)
+        query = """
+            SELECT 
+                sl.id,
+                sl.lot_number,
+                sl.remaining_quantity,
+                COALESCE(SUM(opt_res.reserved_quantity), 0) as reserved_quantity,
+                (sl.remaining_quantity - COALESCE(SUM(opt_res.reserved_quantity), 0)) as available_for_sale
+            FROM stock_lots sl
+            LEFT JOIN option_reservations opt_res ON sl.id = opt_res.lot_id
+            WHERE sl.stock_id = ? AND sl.remaining_quantity > 0
+            GROUP BY sl.id
+            ORDER BY sl.purchase_date, sl.lot_number
+        """
+        
+        lots = execute_query(query, (stock_id,))
+        
+        total_available = sum(lot['available_for_sale'] for lot in lots if lot['available_for_sale'] > 0)
+        
+        return {
+            'can_sell': total_available >= shares_to_sell,
+            'available_shares': total_available,
+            'lots_breakdown': lots
+        }  

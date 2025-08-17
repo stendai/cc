@@ -87,16 +87,22 @@ class StockRepository:
             print(f"⚠️ Błąd pobierania kursu NBP: {e}")
             usd_pln_rate = 4.0  # Kurs domyślny
         
-        # Dodaj transakcję
+        # Oblicz kwoty w PLN
+        price_pln = price * usd_pln_rate
+        commission_pln = commission * usd_pln_rate
+        
+        # NAPRAWIONY INSERT - dodane brakujące kolumny
         query = """
             INSERT INTO stock_transactions 
-            (stock_id, transaction_type, quantity, price_usd, commission_usd, transaction_date, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (stock_id, transaction_type, quantity, price_usd, commission_usd, 
+             transaction_date, usd_pln_rate, price_pln, commission_pln, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         
         transaction_id = execute_insert(
             query, 
-            (stock_id, transaction_type, quantity, price, commission, transaction_date, notes)
+            (stock_id, transaction_type, quantity, price, commission, 
+             transaction_date, usd_pln_rate, price_pln, commission_pln, notes)
         )
         
         # Obsługa lotów
@@ -109,21 +115,29 @@ class StockRepository:
                     commission, transaction_date, usd_pln_rate
                 )
                 
-                # Aktualizuj numer lotu w transakcji
-                execute_update(
-                    "UPDATE stock_transactions SET lot_number = ? WHERE id = ?",
-                    (lot_id, transaction_id)
-                )
-                
                 print(f"📦 Utworzono lot {lot_id} dla {quantity} akcji po ${price:.2f} (kurs {usd_pln_rate:.4f})")
                 
             except Exception as e:
                 print(f"⚠️ Błąd tworzenia lotu: {e}")
         
         elif transaction_type == 'SELL':
+# NOWE: Sprawdź czy można sprzedać (rezerwacje)
+            try:
+                from repos.stock_lots_repo import StockLotsRepository
+                availability = StockLotsRepository.check_shares_available_for_sale(stock_id, quantity)
+                
+                if not availability['can_sell']:
+                    raise ValueError(f"Nie można sprzedać {quantity} akcji. Dostępne: {availability['available_shares']} (reszta zarezerwowana pod opcje)")
+                
+                print(f"✅ Sprawdzenie rezerwacji: można sprzedać {quantity} z {availability['available_shares']} dostępnych")
+                
+            except Exception as check_error:
+                # Usuń transakcję jeśli sprawdzenie się nie powiodło
+                execute_update("DELETE FROM stock_transactions WHERE id = ?", (transaction_id,))
+                raise ValueError(f"Blokada sprzedaży: {check_error}")
+            
             try:
                 # Przetwórz sprzedaż FIFO
-                from repos.stock_lots_repo import StockLotsRepository
                 sale_details = StockLotsRepository.process_sale_fifo(
                     stock_id, transaction_id, quantity, price,
                     transaction_date, usd_pln_rate
@@ -144,6 +158,9 @@ class StockRepository:
                 raise e
             except Exception as e:
                 print(f"⚠️ Błąd przetwarzania sprzedaży: {e}")
+                # Usuń transakcję przy błędzie
+                execute_update("DELETE FROM stock_transactions WHERE id = ?", (transaction_id,))
+                raise e
         
         # Aktualizuj ilość i średnią cenę akcji
         StockRepository._update_stock_position(stock_id)
@@ -183,71 +200,8 @@ class StockRepository:
         """, (total_quantity, avg_price, stock_id))
     
     @staticmethod
-    def get_portfolio_summary() -> Dict[str, Any]:
-        """Pobiera podsumowanie całego portfela akcji."""
-        query = """
-            SELECT 
-                COUNT(*) as total_positions,
-                SUM(quantity * avg_price_usd) as total_cost,
-                SUM(quantity * current_price_usd) as current_value,
-                SUM((quantity * current_price_usd) - (quantity * avg_price_usd)) as unrealized_gain_loss
-            FROM stocks
-            WHERE quantity > 0
-        """
-        result = execute_query(query)
-        return dict(result[0]) if result else {}
-    
-    @staticmethod
-    def get_realized_gains_losses(year: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Pobiera zrealizowane zyski/straty ze sprzedaży akcji."""
-        base_query = """
-            SELECT 
-                s.symbol,
-                st.quantity as sold_quantity,
-                st.price_usd as sale_price,
-                st.transaction_date,
-                st.commission_usd,
-                (st.quantity * st.price_usd - st.commission_usd) as gross_proceeds
-            FROM stock_transactions st
-            JOIN stocks s ON st.stock_id = s.id
-            WHERE st.transaction_type = 'SELL'
-        """
-        
-        params = []
-        if year:
-            base_query += " AND strftime('%Y', st.transaction_date) = ?"
-            params.append(str(year))
-        
-        base_query += " ORDER BY st.transaction_date DESC"
-        
-        return [dict(row) for row in execute_query(base_query, params)]
-    
-    @staticmethod
-    def get_stock_performance() -> List[Dict[str, Any]]:
-        """Pobiera wydajność każdej akcji w portfelu."""
-        query = """
-            SELECT 
-                s.symbol,
-                s.name,
-                s.quantity,
-                s.avg_price_usd,
-                s.current_price_usd,
-                (s.current_price_usd - s.avg_price_usd) as price_change,
-                ((s.current_price_usd - s.avg_price_usd) / s.avg_price_usd * 100) as price_change_pct,
-                (s.quantity * s.avg_price_usd) as total_cost,
-                (s.quantity * s.current_price_usd) as current_value,
-                ((s.quantity * s.current_price_usd) - (s.quantity * s.avg_price_usd)) as unrealized_gain_loss,
-                (((s.quantity * s.current_price_usd) - (s.quantity * s.avg_price_usd)) / 
-                 (s.quantity * s.avg_price_usd) * 100) as return_pct
-            FROM stocks s
-            WHERE s.quantity > 0
-            ORDER BY return_pct DESC
-        """
-        return [dict(row) for row in execute_query(query)]
-    
-    @staticmethod
     def get_transactions_for_tax_calculation(year: int) -> List[Dict[str, Any]]:
-        """Pobiera transakcje potrzebne do obliczeń podatkowych."""
+        """Pobiera transakcje do kalkulacji podatkowej."""
         query = """
             SELECT 
                 s.symbol,
@@ -297,3 +251,15 @@ class StockRepository:
         """
         search_pattern = f"%{search_term}%"
         return [dict(row) for row in execute_query(query, (search_pattern, search_pattern))]
+        
+    def get_stocks_for_options() -> List[Dict[str, Any]]:
+        """Pobiera wszystkie akcje dostępne do opcji (nawet z quantity=0)."""
+        query = """
+            SELECT s.*, 
+                   COALESCE(s.quantity, 0) as quantity,
+                   COALESCE(s.avg_price_usd, 0) as avg_price_usd,
+                   COALESCE(s.current_price_usd, 0) as current_price_usd
+            FROM stocks s
+            ORDER BY s.symbol
+        """
+        return [dict(row) for row in execute_query(query)]

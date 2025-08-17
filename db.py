@@ -11,6 +11,9 @@ def init_database():
         cursor = conn.cursor()
         
         # Usuń stare tabele jeśli istnieją (dla pełnego resetu)
+        cursor.execute("DROP TABLE IF EXISTS option_reservations")
+        cursor.execute("DROP TABLE IF EXISTS stock_lot_sales")
+        cursor.execute("DROP TABLE IF EXISTS stock_lots")
         cursor.execute("DROP TABLE IF EXISTS stock_transactions")
         cursor.execute("DROP TABLE IF EXISTS options")
         cursor.execute("DROP TABLE IF EXISTS dividends")
@@ -32,7 +35,7 @@ def init_database():
             )
         """)
         
-        # Tabela transakcji akcji - POPRAWIONA NAZWA KOLUMNY
+        # Tabela transakcji akcji
         cursor.execute("""
             CREATE TABLE stock_transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,9 +45,54 @@ def init_database():
                 price_usd REAL NOT NULL,
                 commission_usd REAL DEFAULT 0.0,
                 transaction_date DATE NOT NULL,
+                usd_pln_rate REAL NOT NULL,
+                price_pln REAL NOT NULL,
+                commission_pln REAL DEFAULT 0.0,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (stock_id) REFERENCES stocks (id)
+            )
+        """)
+        
+        # Tabela lotów akcji (NOWA - kluczowa dla FIFO)
+        cursor.execute("""
+            CREATE TABLE stock_lots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock_id INTEGER NOT NULL,
+                transaction_id INTEGER,
+                lot_number INTEGER NOT NULL,
+                purchase_date DATE NOT NULL,
+                quantity INTEGER NOT NULL,
+                remaining_quantity INTEGER NOT NULL,
+                purchase_price_usd REAL NOT NULL,
+                purchase_price_pln REAL NOT NULL,
+                commission_usd REAL DEFAULT 0.0,
+                commission_pln REAL DEFAULT 0.0,
+                usd_pln_rate REAL NOT NULL,
+                status TEXT DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'PARTIAL', 'CLOSED')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (stock_id) REFERENCES stocks (id),
+                FOREIGN KEY (transaction_id) REFERENCES stock_transactions (id)
+            )
+        """)
+        
+        # Tabela szczegółów sprzedaży FIFO (NOWA)
+        cursor.execute("""
+            CREATE TABLE stock_lot_sales (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lot_id INTEGER NOT NULL,
+                sale_transaction_id INTEGER NOT NULL,
+                quantity_sold INTEGER NOT NULL,
+                sale_date DATE NOT NULL,
+                sale_price_usd REAL NOT NULL,
+                sale_price_pln REAL NOT NULL,
+                gain_loss_usd REAL NOT NULL,
+                gain_loss_pln REAL NOT NULL,
+                tax_due_pln REAL NOT NULL,
+                usd_pln_rate REAL NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (lot_id) REFERENCES stock_lots (id),
+                FOREIGN KEY (sale_transaction_id) REFERENCES stock_transactions (id)
             )
         """)
         
@@ -62,9 +110,25 @@ def init_database():
                 open_date DATE NOT NULL,
                 close_date DATE,
                 commission_usd REAL DEFAULT 0.0,
+                usd_pln_rate REAL NOT NULL,
+                premium_pln REAL NOT NULL,
+                commission_pln REAL DEFAULT 0.0,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (stock_id) REFERENCES stocks (id)
+            )
+        """)
+        
+        # Tabela rezerwacji akcji pod opcje (NOWA - kluczowa dla covered calls)
+        cursor.execute("""
+            CREATE TABLE option_reservations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                option_id INTEGER NOT NULL,
+                lot_id INTEGER NOT NULL,
+                reserved_quantity INTEGER NOT NULL,
+                reservation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (option_id) REFERENCES options (id),
+                FOREIGN KEY (lot_id) REFERENCES stock_lots (id)
             )
         """)
         
@@ -79,6 +143,10 @@ def init_database():
                 tax_withheld_usd REAL DEFAULT 0.0,
                 ex_date DATE NOT NULL,
                 pay_date DATE NOT NULL,
+                usd_pln_rate REAL NOT NULL,
+                total_amount_pln REAL NOT NULL,
+                tax_withheld_pln REAL DEFAULT 0.0,
+                net_amount_pln REAL NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (stock_id) REFERENCES stocks (id)
             )
@@ -88,8 +156,13 @@ def init_database():
         cursor.execute("""
             CREATE TABLE cashflows (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                transaction_type TEXT NOT NULL CHECK (transaction_type IN ('DEPOSIT', 'WITHDRAWAL', 'DIVIDEND', 'OPTION_PREMIUM', 'COMMISSION', 'TAX')),
+                transaction_type TEXT NOT NULL CHECK (transaction_type IN (
+                    'DEPOSIT', 'WITHDRAWAL', 'DIVIDEND', 'OPTION_PREMIUM', 
+                    'COMMISSION', 'TAX', 'MARGIN_INTEREST', 'CASH_INTEREST', 'STOCK_LENDING'
+                )),
                 amount_usd REAL NOT NULL,
+                amount_pln REAL NOT NULL,
+                usd_pln_rate REAL NOT NULL,
                 description TEXT,
                 date DATE NOT NULL,
                 related_stock_id INTEGER,
@@ -100,7 +173,7 @@ def init_database():
             )
         """)
         
-        # Tabela kursów walut (do przechowywania historycznych kursów USD/PLN)
+        # Tabela kursów walut
         cursor.execute("""
             CREATE TABLE exchange_rates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,7 +202,7 @@ def init_database():
         """)
         
         conn.commit()
-        print("✅ Baza danych została zainicjalizowana z nową strukturą")
+        print("✅ Baza danych została zainicjalizowana z pełną strukturą LOT-ów")
 
 @contextmanager
 def get_connection():

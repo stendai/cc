@@ -52,18 +52,76 @@ class OptionsRepository:
     def add_option(stock_id: int, option_type: str, strike_price: float,
                    expiry_date: date, premium_received: float, quantity: int,
                    open_date: date, commission: float = 0.0, notes: str = None) -> int:
-        """Dodaje nową opcję."""
+        """Dodaje nową opcję z automatyczną rezerwacją akcji dla covered calls."""
+        
+        # NOWE: Sprawdź covered call i zarezerwuj akcje
+        if option_type == "CALL":
+            shares_needed = quantity * 100  # 1 kontrakt = 100 akcji
+            
+            try:
+                # Sprawdź dostępność akcji
+                from repos.stock_lots_repo import StockLotsRepository
+                availability = StockLotsRepository.check_shares_available_for_sale(stock_id, shares_needed)
+                
+                if not availability['can_sell']:
+                    raise ValueError(f"Niewystarczająca ilość akcji. Dostępne: {availability['available_shares']}, potrzebne: {shares_needed}")
+                
+                print(f"✅ Dostępne akcje: {availability['available_shares']}, potrzebne: {shares_needed}")
+                
+            except Exception as e:
+                raise ValueError(f"Błąd sprawdzania dostępności akcji: {e}")
+        
+        # Pobierz kurs NBP z dnia poprzedzającego
+        from services.nbp import nbp_service
+        from datetime import timedelta
+        
+        try:
+            prev_date = open_date - timedelta(days=1)
+            usd_pln_rate = nbp_service.get_usd_pln_rate(prev_date)
+            if not usd_pln_rate:
+                usd_pln_rate = nbp_service.get_usd_pln_rate(open_date) or 4.0
+        except Exception as e:
+            print(f"⚠️ Błąd pobierania kursu NBP: {e}")
+            usd_pln_rate = 4.0
+        
+        # Oblicz kwoty PLN
+        premium_pln = premium_received * usd_pln_rate
+        commission_pln = commission * usd_pln_rate
+        
+        print(f"💰 Inserting option: premium_pln={premium_pln}, commission_pln={commission_pln}")
+        
+        # POPRAWIONE INSERT - z kursami NBP
         query = """
             INSERT INTO options 
             (stock_id, option_type, strike_price, expiry_date, premium_received, 
-             quantity, open_date, commission_usd, notes, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
+             quantity, open_date, commission_usd, usd_pln_rate, premium_pln, 
+             commission_pln, notes, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
         """
         
-        return execute_insert(query, (
+        option_id = execute_insert(query, (
             stock_id, option_type, strike_price, expiry_date, 
-            premium_received, quantity, open_date, commission, notes
+            premium_received, quantity, open_date, commission, 
+            usd_pln_rate, premium_pln, commission_pln, notes
         ))
+        
+        print(f"✅ Opcja utworzona z ID: {option_id}")
+        
+        # NOWE: Zarezerwuj akcje dla covered call
+        if option_type == "CALL":
+            try:
+                from repos.stock_lots_repo import StockLotsRepository
+                print(f"🔒 Próbuję zarezerwować {shares_needed} akcji dla opcji {option_id}")
+                StockLotsRepository.reserve_shares_for_option(option_id, stock_id, shares_needed)
+                print(f"🔒 Zarezerwowano {shares_needed} akcji dla opcji {option_id}")
+                
+            except Exception as e:
+                print(f"❌ Błąd rezerwacji: {e}")
+                # Jeśli rezerwacja się nie powiodła, usuń opcję
+                execute_update("DELETE FROM options WHERE id = ?", (option_id,))
+                raise ValueError(f"Nie udało się zarezerwować akcji: {e}")
+        
+        return option_id
     
     @staticmethod
     def update_option_status(option_id: int, status: str, close_date: date = None) -> bool:

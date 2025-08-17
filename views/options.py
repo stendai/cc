@@ -160,13 +160,15 @@ def show_active_options_tab():
     else:
         st.info("Brak aktywnych opcji. Dodaj pierwszą opcję.")
 
+# W views/options.py - zastąp funkcję show_add_option_tab()
+
 def show_add_option_tab():
-    """Formularz dodawania nowej opcji."""
+    """Formularz dodawania nowej opcji z rezerwacją akcji."""
     
     st.markdown("### ➕ Dodaj nową opcję")
     
     # Pobierz listę akcji
-    stocks = StockRepository.get_all_stocks()
+    stocks = StockRepository.get_stocks_for_options()
     
     if not stocks:
         st.warning("⚠️ Brak akcji w portfelu. Najpierw dodaj akcje w sekcji 'Akcje'.")
@@ -259,10 +261,14 @@ def show_add_option_tab():
         with col3:
             st.info(f"💎 Premium netto: {format_currency(net_premium)}")
         
-        # Sprawdzenie covered call
+        # NOWA LOGIKA: Sprawdzenie pokrycia dla covered call
+# Sprawdzenie covered call - UPROSZCZONE (bez dodatkowego wywołania)
         if selected_stock and option_type == "CALL":
             shares_needed = quantity * 100
             shares_owned = selected_stock['quantity']
+            
+            # USUŃ to wywołanie jeśli istnieje:
+            # availability = OptionsRepository.check_stock_availability_for_cc(selected_stock['id'], quantity)
             
             if shares_owned >= shares_needed:
                 st.success(f"✅ Covered Call: Posiadasz {shares_owned} akcji (potrzebujesz {shares_needed})")
@@ -278,6 +284,7 @@ def show_add_option_tab():
         
         if submitted:
             try:
+                # UŻYJ NOWEJ FUNKCJI Z REZERWACJĄ
                 option_id = OptionsRepository.add_option(
                     stock_id=selected_stock['id'],
                     option_type=option_type,
@@ -290,8 +297,13 @@ def show_add_option_tab():
                     notes=notes
                 )
                 
-                st.success(f"✅ Opcja została dodana! (ID: {option_id})")
+                st.success(f"✅ Opcja została dodana z rezerwacją akcji! (ID: {option_id})")
                 st.rerun()
+                
+            except ValueError as e:
+                # Błąd braku pokrycia
+                st.error(f"❌ {str(e)}")
+                st.info("💡 Dodaj więcej akcji lub zmniejsz ilość kontraktów")
                 
             except Exception as e:
                 st.error(f"❌ Błąd podczas dodawania opcji: {str(e)}")
@@ -321,7 +333,11 @@ def show_performance_tab():
         )
     
     with col3:
-        expired_premium = summary.get('total_premium_received', 0) - summary.get('active_premium', 0)
+        # NAPRAWIONE - zabezpieczenie przed None
+        total_premium_received = summary.get('total_premium_received') or 0
+        active_premium = summary.get('active_premium') or 0
+        expired_premium = total_premium_received - active_premium
+        
         st.metric(
             "✅ Premium zrealizowane",
             format_currency(expired_premium)
